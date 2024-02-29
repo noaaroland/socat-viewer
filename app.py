@@ -25,7 +25,6 @@ import maputil
 import util
 import dash_ag_grid as dag
 from sdig.erddap.info import Info
-import db
 
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
