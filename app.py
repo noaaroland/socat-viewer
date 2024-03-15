@@ -15,26 +15,21 @@ import datashader.transfer_functions as tf
 import PIL
 from pyproj import Transformer
 import dash_mantine_components as dmc
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from dateutil import relativedelta
 import numpy as np
 import pprint
 import hashlib
 import json
 import redis
 import maputil
+import urllib
 import util
 import dash_ag_grid as dag
 from sdig.erddap.info import Info
 
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
-
-# When there will be more than 50,000 (???) points on the property property panel
-# either use the decimated data set or
-# segement by time to display to show the first 50000 with a time selector menu to see the remaning segments
-#
-
-edits_table = 'socat_edits'
 
 # Create a SQLAlchemy connection string from the environment variable `DATABASE_URL`
 # automatically created in your dash app when it is linked to a postgres container
@@ -68,7 +63,7 @@ time_string = '%Y-%m-%d'
 
 # [x-axis, y-axis, color-by]
 thumbnail_pairs = [
-    ['longitude','latitude','WOCE_CO2_water'],
+    # Treat this pair separately as a map... ??? ['longitude','latitude','WOCE_CO2_water'],
     ['time','sample_number','WOCE_CO2_water'],
     ['time','longitude','WOCE_CO2_water'],
     ['time','latitude','WOCE_CO2_water'],
@@ -109,292 +104,418 @@ datasets = {
     'v3': 
         {
             'title': 'SOCAT v3 Data Collection',
-            'ids': ['socat_v3_fulldata', 'socat_v3_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v3_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v3_decimated']
         },
     'v4':
         {
             'title': 'SOCAT v4 Data Collection',
-            'ids': ['socat_v4_fulldata', 'socat_v4_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v4_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v4_decimated']
         },
     'v5':
         {
             'title': 'SOCAT v5 Data Collection',
-            'ids': ['socat_v5_fulldata', 'socat_v5_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v5_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v5_decimated']
         },
     'v6':
         {
             'title': 'SOCAT v6 Data Collection',
-            'ids': ['socat_v6_fulldata', 'socat_v6_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v6_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v6_decimated']
         },
     'v2019':
         {
             'title': 'SOCAT v2019 Data Collection',
-            'ids': ['socat_v2019_fulldata', 'socat_v2019_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2019_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2019_decimated']
 
         },
     'v2020':
         {
             'title': 'SOCAT v2020 Data Collection',
-            'ids': ['socat_v2020_fulldata', 'socat_v2020_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2020_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2020_decimated']
         },
     'v2021':
         {
             'title': 'SOCAT v2021 Data Collection',
-            'ids': ['socat_v2021_fulldata', 'socat_v2021_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2021_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2021_decimated']
         },
     'v2022':
         {
             'title': 'SOCAT v2022 Data Collection',
-            'ids': ['socat_v2022_fulldata', 'socat_v2022_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2022_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2022_decimated']
         },
     'v2023':
         {
             'title': 'SOCAT v2023 Data Collection',
-            'ids': ['socat_v2023_fulldata', 'socat_v2023_decimated']
+            'geometry': 'trajectory',
+            'urls': ['https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2023_fulldata', 'https://data.pmel.noaa.gov/socat/erddap/tabledap/socat_v2023_decimated']
         }
+}
+grids= {
+    'v2023_grid':
+    {
+        'title': 'SOCAT gridded v2023 Monthly 1x1 degree',
+        'geometry': 'grid',
+        'urls': ['https://datalocal.pmel.noaa.gov/erddap/griddap/socat_gridded_summaries_v2023']
+        
     }
+}   
 
+once = True
 version_options = []
 for did in datasets:
     last_did = did
     version_options.append({'label': datasets[did]['title'], 'value': did})
 
-base_url = 'https://data.pmel.noaa.gov/socat/erddap/tabledap/'
+grid_version_options = []
+for gid in grids:
+    last_gid = gid
+    grid_version_options.append({'label': grids[gid]['title'], 'value': gid})
 
-redis_instance.hset("cache", 'full_url', base_url + datasets[last_did]['ids'][0])
-redis_instance.hset("cache", 'decimated_url', base_url + datasets[last_did]['ids'][1])
+redis_instance.hset("cache", "grid_url", grids[last_gid]['urls'][0])
+gridinfo = Info(grids[last_gid]['urls'][0])
+grid_start_date, grid_end_date, grid_start_seconds, grid_end_seconds = gridinfo.get_times()
+grid_variables, grid_long_names, grid_std_names, grid_units, grid_types = gridinfo.get_variables()
+grid_var_options = []
+for var in grid_variables:
+    grid_var_options.append({'label': grid_long_names[var], 'value': var})
 
-initial_full_url = base_url + datasets[last_did]['ids'][0]
-initial_decimated_url = base_url + datasets[last_did]['ids'][1]
+grid_start_date = grid_start_date[:-3] # chop off the day
+grid_end_date = grid_end_date[:-3]
+
+redis_instance.hset("cache", 'full_url', datasets[last_did]['urls'][0])
+redis_instance.hset("cache", 'decimated_url', datasets[last_did]['urls'][1])
+
+initial_full_url = datasets[last_did]['urls'][0]
+initial_decimated_url = datasets[last_did]['urls'][1]
 
 # Define Dash application structure
 app = Dash(__name__)
 server = app.server  # expose server variable for Procfile
-
-dinfo = Info(initial_decimated_url)
-variables, long_names, standard_name, units, v_d_types = dinfo.get_variables()
-variable_options = []
-for var in variables:   
-    if var != 'lat_meters' and var != 'lon_meters':
-        variable_options.append({'label':var, 'value': var})
-start_date, end_date, start_seconds, end_seconds = dinfo.get_times()
 
 app.layout = dmc.Container(fluid=True, children=[
     dmc.Header(height=90, children=[
         dmc.Group(children=[
             dmc.Image(src='https://www.socat.info/wp-content/uploads/2017/06/cropped-socat_cat.png', height='70px', width='140px'),
             dmc.Text('Surface Ocean CO\u2082 Viewer', size="xl", weight=700),
-            dmc.Button(id='table-of-cruises-button', children=["Table of Cruises"]),
+            
         ],style={'margin-top': '8px'} )
     ], withBorder=True),
     html.Div(id='kick'),
     dcc.Store(id='plot-data-change'),
     dcc.Store(id='map-info'),
     dcc.Store(id='version-change'),
-    dmc.Grid(children=[
-        dmc.Col(span=3, children=[
-            dmc.Text('SOCAT Version', size='lg', weight=500, ml='lg'),
-            dmc.Select(id='socat-version', searchable=True,
-                data=version_options, value='v2020'
-            ),
-            dmc.Group(position='apart', children=[
-                dmc.Text('Map Controls', size='lg', weight=500, ml='lg'),
-                dmc.Button(id='reset', children='Reset', style={'float': 'right'}, mr='lg'),
-            ]),
-            dmc.AccordionMultiple(style={'height': '480px', 'overflow': 'auto', 'overflow-x': 'hidden'},  chevronPosition="left", variant='contained', 
-                                  value=['variable-accordion', 'expocode-accordion', 'woce-accordion', 'region-accordion'], children=[
-                dmc.AccordionItem(value='variable-accordion', children=[
-                    dmc.AccordionControl('Variable:'),
-                    dmc.AccordionPanel(children=[
-                        dmc.Select(id='map-variable', searchable=True)
-                    ]),
+    dcc.Store(id='grid-change'),
+    dmc.Tabs(id='tabs', children=[
+        dmc.TabsList([
+            dmc.Tab("Cruise Data", value="cruise", ),
+            dmc.Tab("Gridded Summaries", value="grid", )
+        ], ),
+    dmc.TabsPanel(value="cruise", children=[
+        dmc.Grid(children=[
+            dmc.Col(span=3, children=[
+                dmc.Group(position='apart', children=[
+                    dmc.Text('SOCAT Version', size='lg', weight=500, ml='lg', pt=15, pb=15),
+                    dmc.Button(id='table-of-cruises-button', children=["Table of Cruises"]),
                 ]),
-                dmc.AccordionItem(value='region-accordion', children=[
-                    dmc.AccordionControl('Region:'),
-                    dmc.AccordionPanel(children=[
-                        dmc.MultiSelect(id='region', placeholder='Select Region', searchable=True, data=[
-                            {'value': "A", "label":'North Atlantic'},
-                            {'value': "C", "label": "Coastal"},
-                            {'value': "I", "label":'Indian'},
-                            {'value': "N", "label":"North Pacific"},
-                            {'value': "O", "label": "Southern Oceans"},
-                            {'value': "R", "label": "Arctic"},
-                            {'value': "T", "label": "Tropical Pacific"},
-                            {'value': "Z", "label": "Tropical Atlantic"}
-                        ],),
-                    ]),
+                dmc.Select(id='socat-version', searchable=True,
+                    data=version_options, value='v2023'
+                ),
+                dmc.Group(position='apart', children=[
+                    dmc.Text('Map Controls', size='lg', weight=500, ml='lg', pt=15, pb=15),
+                    dmc.Button(id='reset', children='Reset', style={'float': 'right'}, mr='lg'),
                 ]),
-                dmc.AccordionItem(value='woce-accordion', children=[
-                    dmc.AccordionControl('WOCE Flag for Water CO2:'),
-                    dmc.AccordionPanel(children=[
-                        dmc.MultiSelect(id='woce-co2-water', placeholder='Select WOCE Flag', searchable=True, data=[
-                            {'value': "2", "label":'2'},
-                            {'value': "3", "label": "3"},
-                            {'value': "4", "label":'4'},
+                dmc.AccordionMultiple(style={'height': '480px', 'overflow': 'auto', 'overflow-x': 'hidden'},  chevronPosition="left", variant='contained', 
+                                    value=['variable-accordion', 'expocode-accordion', 'woce-accordion', 'region-accordion'], children=[
+                    dmc.AccordionItem(value='variable-accordion', children=[
+                        dmc.AccordionControl('Variable:'),
+                        dmc.AccordionPanel(children=[
+                            dmc.Select(id='map-variable', searchable=True)
                         ]),
                     ]),
+                    dmc.AccordionItem(value='region-accordion', children=[
+                        dmc.AccordionControl('Region:'),
+                        dmc.AccordionPanel(children=[
+                            dmc.MultiSelect(id='region', placeholder='Select Region', searchable=True, data=[
+                                {'value': "A", "label":'North Atlantic'},
+                                {'value': "C", "label": "Coastal"},
+                                {'value': "I", "label":'Indian'},
+                                {'value': "N", "label":"North Pacific"},
+                                {'value': "O", "label": "Southern Oceans"},
+                                {'value': "R", "label": "Arctic"},
+                                {'value': "T", "label": "Tropical Pacific"},
+                                {'value': "Z", "label": "Tropical Atlantic"}
+                            ],),
+                        ]),
+                    ]),
+                    dmc.AccordionItem(value='woce-accordion', children=[
+                        dmc.AccordionControl('WOCE Flag for Water CO2:'),
+                        dmc.AccordionPanel(children=[
+                            dmc.MultiSelect(id='woce-co2-water', placeholder='Select WOCE Flag', searchable=True, data=[
+                                {'value': "2", "label":'2'},
+                                {'value': "3", "label": "3"},
+                                {'value': "4", "label":'4'},
+                            ]),
+                        ]),
+                    ]),
+                    dmc.AccordionItem(value='time-accordian', children=[
+                        dmc.AccordionControl("Time Range:"),
+                        dmc.AccordionPanel(children=[
+                            dmc.Group(position='apart', children=[
+                                dcc.Input(id='start-date-picker', type="date"),
+                                # dcc.DatePickerSingle(
+                                #     id='start-date-picker',
+                                #     display_format='YYYY-MM-DD',
+                                #     min_date_allowed=datetime.now().date(),
+                                #     max_date_allowed=datetime.now().date(),
+                                # ),
+                                # dmc.DatePicker(
+                                #     id="start-date-picker",
+                                #     label="Start Date",
+                                #     minDate=datetime.now().date(),
+                                #     maxDate=datetime.now().date(),
+                                #     value=datetime.now().date(),
+                                #     inputFormat='YYYY-MM-DD',
+                                #     clearable=False,
+                                #     # style={"width": 200},
+                                # ),
+                                dcc.Input(id='end-date-picker', type='date')
+                                # dcc.DatePickerSingle(
+                                #     id='end-date-picker',
+                                #     display_format='YYYY-MM-DD',
+                                #     min_date_allowed=datetime.now().date(),
+                                #     max_date_allowed=datetime.now().date()
+                                # )
+                                # dmc.DatePicker(
+                                #     id="end-date-picker",
+                                #     label="End Date",
+                                #     minDate=datetime.now().date(),
+                                #     maxDate=datetime.now().date(),
+                                #     value=datetime.now().date(),
+                                #     inputFormat='YYYY-MM-DD',
+                                #     clearable=False,
+                                #     # style={"width": 200, 'padding-left': '30px'},
+                                # )
+                            ])
+                        ]),
+                    ]),
+                    dmc.AccordionItem(value='metadata-accordian',
+                    children=[
+                        dmc.AccordionControl("Other Metadata Constraints:",),
+                        dmc.AccordionPanel(children=[
+                            dmc.AccordionMultiple(chevronPosition="left", variant='contained', 
+                            styles={"control": {"backgroundColor": dmc.theme.DEFAULT_COLORS["blue"][0], ':hover':{'background-color': dmc.theme.DEFAULT_COLORS["blue"][1]}}},
+                            children=[
+                                dmc.AccordionItem(value='investigator-item', children=[
+                                    dmc.AccordionControl("Investigators:"),
+                                    dmc.AccordionPanel(children=[
+                                        dmc.MultiSelect(id='investigator', placeholder='Select investigators', clearable=True, searchable=True, data=[
+                                        ]),                                
+                                    ]),
+                                ]),
+                                dmc.AccordionItem(value='organization-item', children=[
+                                    dmc.AccordionControl("Organization:"),
+                                    dmc.AccordionPanel(children=[
+                                        dmc.MultiSelect(id='organization', placeholder='Select organization', clearable=True, searchable=True, data=[
+                                        ]),                                
+                                    ])
+                                ]),
+                                dmc.AccordionItem(value='qc-flag-item', children=[
+                                    dmc.AccordionControl("QC Flag:"),
+                                    dmc.AccordionPanel(children=[
+                                        dmc.MultiSelect(id='qc-flag', placeholder='Select QC Flag', clearable=True, searchable=True, data=[
+                                            {'label': 'A', 'value': 'A'},
+                                            {'label': 'B', 'value': 'B'},
+                                            {'label': 'C', 'value': 'C'},
+                                            {'label': 'D', 'value': 'D'},
+                                            {'label': 'E', 'value': 'E'}
+                                        ]),                                
+                                    ])
+                                ]),
+                                dmc.AccordionItem(value='platform-type-item', children=[
+                                    dmc.AccordionControl("Platform Type:"),
+                                    dmc.AccordionPanel(children=[
+                                        dmc.MultiSelect(id='platform-type', placeholder='Select Platform Type', clearable=True, searchable=True, data=[
+                                            {'label': "Autonomous Surface Vehicle", 'value': "Autonomous Surface Vehicle"},
+                                            {'label': "Boat", 'value': "Boat"},
+                                            {'label': "Drifting Buoy", 'value': "Drifting Buoy"},
+                                            {'label': "Mooring", 'value': "Mooring"},
+                                            {'label': "Ship", 'value': "Ship"}
+                                        ]),                                
+                                    ])
+                                ])
+                            ],
+                            )
+                        ]),
+                    ],                         
+                    )
                 ]),
-                dmc.AccordionItem(value='time-accordian', children=[
-                    dmc.AccordionControl("Time Range:"),
-                    dmc.AccordionPanel(children=[
-                        dmc.Group([
-                            dmc.DatePicker(
-                                id="start-date-picker",
-                                label="Start Date",
-                                minDate=datetime.now().date(),
-                                maxDate=datetime.now().date(),
-                                value=datetime.now().date(),
-                                inputFormat='YYYY-MM-DD',
-                                clearable=False,
-                                # style={"width": 200},
-                            ),
-                            dmc.DatePicker(
-                                id="end-date-picker",
-                                label="End Date",
-                                minDate=datetime.now().date(),
-                                maxDate=datetime.now().date(),
-                                value=datetime.now().date(),
-                                inputFormat='YYYY-MM-DD',
-                                clearable=False,
-                                # style={"width": 200, 'padding-left': '30px'},
+                dmc.Group(position='apart', children=[
+                    dmc.Text('Plot Controls', size='lg', weight=500, ml='lg', pt=15, pb=15),
+                ]),
+                dmc.AccordionMultiple(style={'height': '350px', 'overflow': 'auto', 'overflow-x': 'hidden'},  chevronPosition="left", variant='contained', 
+                                    value=['plot-type-accordion', 'expocode-accordion'],
+                                    children=[
+                    dmc.AccordionItem(value='expocode-accordion', children=[
+                        dmc.AccordionControl('Expocode:'),
+                        dmc.AccordionPanel(children=[
+                            dmc.MultiSelect(id='expocode', placeholder='Select a cruise from the list...', clearable=True, searchable=True)
+                        ]),
+                    ]),
+                    dmc.AccordionItem(value='plot-type-accordion', children=[
+                        dmc.AccordionControl('Plot Type:'),
+                        dmc.AccordionPanel([
+                            dmc.Select(id='plot-type', value='prop-prop', clearable=False,
+                                data=[
+                                    {'label': 'Timeseries', 'value': 'timeseries'},
+                                    {'label': 'Property-Property', 'value': 'prop-prop'},
+                                    {'label': 'Property-Property Thumbnails', 'value': 'prop-prop-thumbs', 'disabled': False}
+                                ]
                             )
                         ])
                     ]),
-                ]),
-                dmc.AccordionItem(value='metadata-accordian',
-                children=[
-                    dmc.AccordionControl("Other Metadata Constraints:",),
-                    dmc.AccordionPanel(children=[
-                        dmc.AccordionMultiple(chevronPosition="left", variant='contained', 
-                        styles={"control": {"backgroundColor": dmc.theme.DEFAULT_COLORS["blue"][0], ':hover':{'background-color': dmc.theme.DEFAULT_COLORS["blue"][1]}}},
-                        children=[
-                            dmc.AccordionItem(value='investigator-item', children=[
-                                dmc.AccordionControl("Investigators:"),
-                                dmc.AccordionPanel(children=[
-                                    dmc.MultiSelect(id='investigator', placeholder='Select investigators', clearable=True, searchable=True, data=[
-                                    ]),                                
-                                ]),
-                            ]),
-                            dmc.AccordionItem(value='organization-item', children=[
-                                dmc.AccordionControl("Organization:"),
-                                dmc.AccordionPanel(children=[
-                                    dmc.MultiSelect(id='organization', placeholder='Select organization', clearable=True, searchable=True, data=[
-                                    ]),                                
-                                ])
-                            ]),
-                            dmc.AccordionItem(value='qc-flag-item', children=[
-                                dmc.AccordionControl("QC Flag:"),
-                                dmc.AccordionPanel(children=[
-                                    dmc.MultiSelect(id='qc-flag', placeholder='Select QC Flag', clearable=True, searchable=True, data=[
-                                        {'label': 'A', 'value': 'A'},
-                                        {'label': 'B', 'value': 'B'},
-                                        {'label': 'C', 'value': 'C'},
-                                        {'label': 'D', 'value': 'D'},
-                                        {'label': 'E', 'value': 'E'}
-                                    ]),                                
-                                ])
-                            ]),
-                            dmc.AccordionItem(value='platform-type-item', children=[
-                                dmc.AccordionControl("Platform Type:"),
-                                dmc.AccordionPanel(children=[
-                                    dmc.MultiSelect(id='platform-type', placeholder='Select Platform Type', clearable=True, searchable=True, data=[
-                                        {'label': "Autonomous Surface Vehicle", 'value': "Autonomous Surface Vehicle"},
-                                        {'label': "Boat", 'value': "Boat"},
-                                        {'label': "Drifting Buoy", 'value': "Drifting Buoy"},
-                                        {'label': "Mooring", 'value': "Mooring"},
-                                        {'label': "Ship", 'value': "Ship"}
-                                    ]),                                
-                                ])
-                            ])
-                        ],
-                        )
+                    dmc.AccordionItem(id='prop-prop-x-item', style={'visibility':'hidden'}, value='prop-prop-x-accordion', children=[
+                        dmc.AccordionControl('Property-property X-axis'),
+                        dmc.AccordionPanel(children=[
+                            dmc.Select(id='prop-prop-x', value='time', searchable=True, clearable=False)
+                        ]),
                     ]),
-                ],                         
-                )
-            ]),
-            dmc.Group(position='apart', children=[
-                dmc.Text('Plot Controls', size='lg', weight=500, ml='lg'),
-            ]),
-            dmc.AccordionMultiple(style={'height': '350px', 'overflow': 'auto', 'overflow-x': 'hidden'},  chevronPosition="left", variant='contained', 
-                                  value=['plot-type-accordion', 'expocode-accordion'],
-                                children=[
-                dmc.AccordionItem(value='expocode-accordion', children=[
-                    dmc.AccordionControl('Expocode:'),
-                    dmc.AccordionPanel(children=[
-                        dmc.MultiSelect(id='expocode', placeholder='Select a cruise from the list...', clearable=True, searchable=True)
+                    dmc.AccordionItem(id='prop-prop-y-item', style={'visibility':'hidden'}, value='prop-prop-y-accordion', children=[
+                        dmc.AccordionControl('Property-property Y-axis'),
+                        dmc.AccordionPanel(children=[
+                            dmc.Select(id='prop-prop-y', value='fCO2_recommended', searchable=True, clearable=False)
+                        ]),
                     ]),
-                ]),
-                dmc.AccordionItem(value='plot-type-accordion', children=[
-                    dmc.AccordionControl('Plot Type:'),
-                    dmc.AccordionPanel([
-                        dmc.Select(id='plot-type', value='prop-prop', clearable=False,
-                            data=[
-                                {'label': 'Timeseries', 'value': 'timeseries'},
-                                {'label': 'Property-Property', 'value': 'prop-prop'},
-                                {'label': 'Property-Property Thumbnails', 'value': 'prop-prop-thumbs', 'disabled': False}
-                            ]
-                        )
+                    dmc.AccordionItem(id='prop-prop-colorby-item', style={'visibility':'hidden'}, value='prop-prop-colorby-accordion', children=[
+                        dmc.AccordionControl('Property-property Color-by'),
+                        dmc.AccordionPanel(children=[
+                            dmc.Select(id='prop-prop-colorby', value='expocode', searchable=True, clearable=False)
+                        ]),
                     ])
-                ]),
-                dmc.AccordionItem(id='prop-prop-x-item', style={'visibility':'hidden'}, value='prop-prop-x-accordion', children=[
-                    dmc.AccordionControl('Property-property X-axis'),
-                    dmc.AccordionPanel(children=[
-                        dmc.Select(id='prop-prop-x', value='time', searchable=True, clearable=False)
-                    ]),
-                ]),
-                dmc.AccordionItem(id='prop-prop-y-item', style={'visibility':'hidden'}, value='prop-prop-y-accordion', children=[
-                    dmc.AccordionControl('Property-property Y-axis'),
-                    dmc.AccordionPanel(children=[
-                        dmc.Select(id='prop-prop-y', value='fCO2_recommended', searchable=True, clearable=False)
-                    ]),
-                ]),
-                dmc.AccordionItem(id='prop-prop-colorby-item', style={'visibility':'hidden'}, value='prop-prop-colorby-accordion', children=[
-                    dmc.AccordionControl('Property-property Color-by'),
-                    dmc.AccordionPanel(children=[
-                        dmc.Select(id='prop-prop-colorby', value='expocode', searchable=True, clearable=False)
-                    ]),
                 ])
-            ])
-        ]),
-        dmc.Col(span=9, children=[
-            dmc.Card(children=[
-                dmc.CardSection(mt='xl', mx='sm', children=[
-                    dcc.Loading(color='white', type='dot', children=[
-                        dmc.Text(id='map-graph-header', size='lg', weight=500, ml='lg', mt='lg'),
-                    ])
-                ]),
-                dmc.CardSection(
-                    dcc.Loading(
-                        dcc.Graph(id='map-graph', config={'modeBarButtonsToAdd':['zoom2d',
-                                                    'drawopenpath',
-                                                    'drawclosedpath',
-                                                    'drawcircle',
-                                                    'drawrect',
-                                                    'eraseshape'
-                                                ]}, style={'height': '65vh'}),
-                    )
-                )
-            ], withBorder=True, shadow="sm", radius="md", style={'height': '70vh'}),
-            dmc.Card(id='one-graph-card', style={'visibility': 'hidden'}, children=[
-                dmc.CardSection(mt='lg', mx='sm', children=[
-                    dcc.Loading(type='dot', color='white', children=[
-                        dmc.Group(children=[
-                            dmc.Text(id='one-graph-header',  size='lg', weight=500, ml='lg', mt='lg'),
-                            dmc.Text('Data from this plot:      ',  size='lg', weight=500, ml='lg', mt='lg'),
-                            dmc.Anchor(id='show', children=[dmc.Button("Show", id='show-button', compact=True, style={'margin-top':'15px'})], href=initial_full_url, target='_blank'),
-                            dmc.Anchor(id='csv', children=[dmc.Button('CSV', id='csv-button', compact=True, style={'margin-top':'15px'})], href=initial_full_url, target='_blank'),
-                            dmc.Anchor(id='netcdf', children=[dmc.Button('netCDF', id='netcdf-button', compact=True, style={'margin-top':'15px'})], href=initial_full_url, target='_blank')
+            ]),
+            dmc.Col(span=9, children=[
+                dmc.Card(children=[
+                    dmc.CardSection(mt='xl', mx='sm', children=[
+                        dcc.Loading(color='white', type='dot', children=[
+                            dmc.Text(id='map-graph-header', size='lg', weight=500, ml='lg', mt='lg'),
                         ])
+                    ]),
+                    dmc.CardSection(
+                        dcc.Loading(
+                            dcc.Graph(id='map-graph', config={'modeBarButtonsToAdd':['zoom2d',
+                                                        'drawopenpath',
+                                                        'drawclosedpath',
+                                                        'drawcircle',
+                                                        'drawrect',
+                                                        'eraseshape'
+                                                    ]}, style={'height': '65vh'}),
+                        )
+                    )
+                ], withBorder=True, shadow="sm", radius="md", style={'height': '70vh'}),
+                dmc.Card(id='one-graph-card', style={'visibility': 'hidden'}, children=[
+                    dmc.CardSection(mt='lg', mx='sm', children=[
+                        dcc.Loading(type='dot', color='white', children=[
+                            dmc.Group(children=[
+                                dmc.Text(id='one-graph-header',  size='lg', weight=500, ml='lg', mt='lg'),
+                                dmc.Text('Data from this plot:      ',  size='lg', weight=500, ml='lg', mt='lg'),
+                                dmc.Anchor(id='show', children=[dmc.Button("Show", id='show-button', compact=True, style={'margin-top':'15px'})], href=initial_full_url, target='_blank'),
+                                dmc.Anchor(id='csv', children=[dmc.Button('CSV', id='csv-button', compact=True, style={'margin-top':'15px'})], href=initial_full_url, target='_blank'),
+                                dmc.Anchor(id='netcdf', children=[dmc.Button('netCDF', id='netcdf-button', compact=True, style={'margin-top':'15px'})], href=initial_full_url, target='_blank')
+                            ])
+                        ])
+                    ]),
+                    dmc.CardSection(children=[
+                        dcc.Loading(dcc.Graph(id='one-graph')),
                     ])
-                ]),
-                dmc.CardSection(
-                    dcc.Loading(dcc.Graph(id='one-graph'))
-                )
-            ], withBorder=True, shadow="sm", radius="md")
+                ], withBorder=True, shadow="sm", radius="md"),
+                dmc.Card(id='minimap-card', style={'visibility': 'hidden'}, children=[
+                    dmc.CardSection(mt='lg', mx='sm', children=[
+                        dmc.Text(id='minimap-header',  size='lg', weight=500, ml='lg', mt='lg'),
+                    ]),
+                    dmc.CardSection(children=[
+                        dcc.Loading(dcc.Graph(id='minimap', style={'height': '45vh'}))
+                    ])
+                ], withBorder=True, shadow="sm", radius="md")
+            ]),
+
         ]),
-
     ]),
+    dmc.TabsPanel(value="grid",children=[
+        dmc.Grid(children=[
+            dmc.Col(span=3, children=[
+                dmc.Text('SOCAT Summary Version', size='lg', weight=500, ml='lg', pt=15, pb=15),
+                dmc.Select(id='grid-version', searchable=True,
+                    data=grid_version_options, value='v2023_grid'
+                ),
+                dmc.Group(position='apart', children=[
+                    dmc.Text('Map Controls', size='lg', weight=500, ml='lg', pt=15, pb=15),
+                    dmc.Button(id='grid-reset', children='Reset', style={'float': 'right'}, mr='lg'),
+                ]),
+                dmc.AccordionMultiple(style={'height': '480px', 'overflow': 'auto', 'overflow-x': 'hidden'},  chevronPosition="left", variant='contained', 
+                                    value=['grid-variable-accordion', 'grid-month-accoridan'], children=[
+                    dmc.AccordionItem(value='grid-variable-accordion', children=[
+                        dmc.AccordionControl('Variable:'),
+                        dmc.AccordionPanel(children=[
+                            dmc.Select(id='grid-map-variable', data=grid_var_options, value="fco2_count_nobs", searchable=True)
+                        ]),
+                    ]),
+                    dmc.AccordionItem(value='grid-month-accordian', children=[
+                        dmc.AccordionControl("Month to Plot:"),
+                        dmc.AccordionPanel(children=[
+                            dmc.Group(position='apart', children=[
+                                dcc.Input(id='grid-date-picker', type="month", value=grid_start_date, min=grid_start_date, max=grid_end_date),
+                                # dcc.DatePickerSingle(
+                                #     id='start-date-picker',
+                                #     display_format='YYYY-MM-DD',
+                                #     min_date_allowed=datetime.now().date(),
+                                #     max_date_allowed=datetime.now().date(),
+                                # ),
+                                # dmc.DatePicker(
+                                #     id="start-date-picker",
+                                #     label="Start Date",
+                                #     minDate=datetime.now().date(),
+                                #     maxDate=datetime.now().date(),
+                                #     value=datetime.now().date(),
+                                #     inputFormat='YYYY-MM-DD',
+                                #     clearable=False,
+                                #     # style={"width": 200},
+                                # ),
+                            ])
+                        ]),
+                    ]),
+                ]),
+            ]),
+            dmc.Col(span=9, children=[
+                dmc.Card(children=[
+                    dmc.CardSection(mt='xl', mx='sm', children=[
+                        dcc.Loading(color='white', type='dot', children=[
+                            dmc.Text(id='grid-map-header', size='lg', weight=500, ml='lg', mt='lg'),
+                        ])
+                    ]),
+                    dmc.CardSection(
+                        dcc.Loading(
+                            dcc.Graph(id='grid-map', config={'modeBarButtonsToAdd':['zoom2d',
+                                                        'drawopenpath',
+                                                        'drawclosedpath',
+                                                        'drawcircle',
+                                                        'drawrect',
+                                                        'eraseshape'
+                                                    ]}, style={'height': '65vh'}),
+                        )
+                    )
+                ], withBorder=True, shadow="sm", radius="md", style={'height': '70vh'}),
+            ]),
 
+        ]),
+    ]),
+    ], value="cruise"),
     dmc.Modal(id="modal-cruise-table", title="Table of Cruises", overflow="inside", size="95%", zIndex=10000, children=[
         dmc.Grid(id='table-grid', children=[
             dmc.Col(span=12, children=[
@@ -434,69 +555,113 @@ app.layout = dmc.Container(fluid=True, children=[
 
 
 @app.callback(
-    Output("modal-edit-table", "opened"),
-    Output('comment', 'value'),
-    Input('one-graph', 'selectedData'),
-    Input('edit-save', 'n_clicks'),
-    Input('edit-cancel', 'n_clicks'),
-    State('selected-points', 'rowData'),
-    State("modal-edit-table", "opened"),
-    State('comment','value'),
-    prevent_initial_call=True,
-)
-def modal_open_edit(in_selected_data, save_button, cancel_button, rowData, opened, in_comment):
-    reminder = 'You must supply a comment.'
-    ex_reminder = 'No, really. You must supply a comment telling what you did and why.'
-    if in_selected_data is None: 
-        raise exceptions.PreventUpdate
-    if len(in_selected_data['points']) == 0:
-        raise exceptions.PreventUpdate
-    triggered_id = callback_context.triggered_id
-    if triggered_id == 'edit-save':
-        if in_comment is None or len(in_comment) == 0 or in_comment == reminder or in_comment == ex_reminder:
-            if in_comment == reminder:
-                return no_update, ex_reminder
-            else:
-                return no_update, reminder
-        selected_data = pd.read_json(redis_instance.hget("cache","edit-table-data"))
-        as_edited = pd.DataFrame(rowData)
-        edits = pd.concat([selected_data, as_edited]).drop_duplicates(keep=False)
-        start = int(edits.shape[0]/2)
-        d = datetime.utcnow()
-        d = str(d)
-        d = d.replace(d[-7:], 'Z')
-        edits.loc[:, 'edit_timestamp'] = d
-        edits.loc[:, 'comment'] = in_comment
-        save_edits = edits.iloc[start:]
-        save_edits.to_sql(edits_table, postgres_engine, if_exists='append', index=False)
-    return not opened, ''
-
-
-@app.callback(
     [
         Output('version-change', 'data'),
         Output('expocode', 'value'),
-        Output('start-date-picker', 'minDate', allow_duplicate=True),
-        Output('start-date-picker', 'maxDate', allow_duplicate=True),
-        Output('end-date-picker', 'minDate', allow_duplicate=True),
-        Output('end-date-picker', 'maxDate', allow_duplicate=True),
+        Output('start-date-picker', 'min', allow_duplicate=True),
+        Output('start-date-picker', 'max', allow_duplicate=True),
+        Output('end-date-picker', 'min', allow_duplicate=True),
+        Output('end-date-picker', 'max', allow_duplicate=True),
         Output('start-date-picker', 'value', allow_duplicate=True),
-        Output('end-date-picker', 'value', allow_duplicate=True)
+        Output('end-date-picker', 'value', allow_duplicate=True),
+        # Output(variables as well)
     ],
     [
         Input('socat-version','value')
     ],prevent_initial_call=True
-
 )
 def change_socat_version(in_socat_version):
+    itype = 'date'
     if in_socat_version is not None and len(in_socat_version) > 0:
-        redis_instance.hset("cache", 'full_url', base_url + datasets[in_socat_version]['ids'][0])
-        redis_instance.hset("cache", 'decimated_url', base_url + datasets[in_socat_version]['ids'][1])
-        dsinfo = Info(base_url + datasets[in_socat_version]['ids'][1])
+        # Change the variables as well
+        dsinfo = Info(datasets[in_socat_version]['urls'][0])
         n_start_date, n_end_date, n_start_seconds, n_end_seconds = dsinfo.get_times()
+        redis_instance.hset("cache", 'full_url', datasets[in_socat_version]['urls'][0])
+        redis_instance.hset("cache", 'decimated_url', datasets[in_socat_version]['urls'][1])
+
         return [in_socat_version, '', n_start_date, n_end_date, n_start_date, n_end_date, n_start_date, n_end_date]
     else:
         raise PreventUpdate
+
+
+@app.callback(
+    [
+        Output('grid-change', 'data', allow_duplicate=True),
+        Output('grid-date-picker', 'min', allow_duplicate=True),
+        Output('grid-date-picker', 'max', allow_duplicate=True),
+        Output('grid-date-picker', 'value', allow_duplicate=True),
+        Output('grid-map-variable', 'data', allow_duplicate=True),
+        Output('grid-map-variable', 'value', allow_duplicate=True)
+    ],
+    [
+        Input('grid-version','value'),
+    ],
+    [
+        State('grid-map', 'figure')
+    ], prevent_initial_call=True
+)
+def change_grid(in_grid_version, tab_value, in_figure):
+    print('changing grids')
+    dsinfo = Info(grids[in_grid_version]['urls'][0])
+    redis_instance.hset("cache", 'grid_url', grids[in_grid_version]['urls'][0])
+    n_start_date, n_end_date, n_start_seconds, n_end_seconds = dsinfo.get_times()
+    g_variables, g_long_names, g_std_names, g_units, g_types = dsinfo.get_variables()
+    g_var_options = []
+    for var in g_variables:
+        g_var_options.append({'label': g_long_names[var], 'value': var})
+
+    n_start_date = n_start_date[:-3] # chop off the day
+    n_end_date = n_end_date[:-3]
+    return ['yes', n_start_date, n_end_date, n_start_date, g_var_options, "fco2_count_nobs"]
+
+
+
+
+@app.callback(
+    [
+        Output("grid-map-header", "children"),
+        Output('grid-map', 'figure')
+    ], 
+    [
+        Input("grid-change", "data"),
+        Input('grid-date-picker', 'value'),
+        Input('grid-map-variable', 'value'),
+    ],
+    [
+        State('grid-date-picker', 'min')
+    ]
+)
+def update_grid_map(in_grid_change, month, g_variable, begin_date):
+    if g_variable is None or len(g_variable) == 0:
+        raise exceptions.PreventUpdate
+    mobj = datetime.strptime(month, '%Y-%m')
+    begin_obj = datetime.strptime(begin_date, '%Y-%m')
+   
+    g_url = redis_instance.hget("cache", "grid_url").decode('utf-8')
+    r = relativedelta.relativedelta(mobj, begin_obj)
+    mindex = r.months + (12*r.years)
+    con = '['+str(mindex)+'][0:179][0:359]'
+    g_url = g_url + '.csv?' + g_variable + urllib.parse.quote(con, safe='():')
+    # https://datalocal.pmel.noaa.gov/erddap/griddap/socat_gridded_summaries_v2023.csv?count_ncruise%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,fco2_count_nobs%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,fco2_ave_weighted%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,fco2_ave_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,fco2_min_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,fco2_max_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,fco2_std_weighted%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,fco2_std_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,sst_count_nobs%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,sst_ave_weighted%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,sst_ave_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,sst_min_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,sst_max_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,sst_std_weighted%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,sst_std_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,salinity_count_nobs%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,salinity_ave_weighted%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,salinity_ave_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,salinity_min_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,salinity_max_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,salinity_std_weighted%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,salinity_std_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,lat_offset_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D,lon_offset_unwtd%5B(2022-01):1:(2022-02)%5D%5B(-89.5):1:(89.5)%5D%5B(-179.5):1:(179.5)%5D
+    print(g_url)
+    df = pd.read_csv(g_url, skiprows=[1])
+    df = df.loc[(df[g_variable]>0)]
+    figure = px.scatter_geo(df,
+                            lat='latitude',
+                            lon='longitude',
+                            color=g_variable,
+                            color_continuous_scale='Viridis',
+                            hover_data=['time','latitude','longitude',g_variable], 
+                            projection='equirectangular')
+        # if fitbounds:
+        #     figure.update_geos(fitbounds='locations')
+        # else:
+        #     figure.update_geos(lonaxis_range=[lon_min,lon_max], lataxis_range=[lat_min,lat_max])
+    figure.update_traces(marker=dict(size=6))
+    figure.update_layout(margin={'t':25, 'b':25, 'l':0, 'r':0})
+    figure.update_coloraxes(colorbar={'orientation':'h', 'thickness':20, 'y': -.175, 'title': None})
+    figure.update_geos(showland=True, coastlinecolor='black', coastlinewidth=1, landcolor='tan', resolution=50)
+    return [g_variable + " for " + month, figure]
 
 
 @app.callback(
@@ -516,11 +681,11 @@ def modal_open_cruise(header_button, opened):
         Output('prop-prop-x', 'data'),
         Output('prop-prop-y','data'),
         Output('prop-prop-colorby', 'data'),
-        Output('start-date-picker', 'minDate'),
-        Output('start-date-picker', 'maxDate'),
+        Output('start-date-picker', 'min'),
+        Output('start-date-picker', 'max'),
         Output('start-date-picker', 'value'),
-        Output('end-date-picker', 'minDate'),
-        Output('end-date-picker', 'maxDate'),
+        Output('end-date-picker', 'min'),
+        Output('end-date-picker', 'max'),
         Output('end-date-picker', 'value'),
         Output('investigator', 'data'),
         Output('organization', 'data'),
@@ -531,6 +696,20 @@ def modal_open_cruise(header_button, opened):
 )
 def set_up(click_in):
     decimated_url = redis_instance.hget("cache","decimated_url").decode('utf-8')
+    
+    dinfo = Info(initial_decimated_url)
+    variables, long_names, standard_names, units, v_d_types = dinfo.get_variables()
+
+    meta = {"variables": variables, "long_names": long_names, "standard_names": standard_names, "units": units, "types": v_d_types}
+
+    redis_instance.hset("cache", "metadata", json.dumps(meta))
+
+    variable_options = []
+    for var in variables:   
+        if var != 'lat_meters' and var != 'lon_meters':
+            variable_options.append({'label':var, 'value': var})
+    start_date, end_date, start_seconds, end_seconds = dinfo.get_times()
+
     inv_url = decimated_url + '.csv?investigators&distinct()'
     inv_df = pd.read_csv(inv_url, skiprows=[1])
     investigator_options = []
@@ -549,6 +728,7 @@ def set_up(click_in):
         Output('map-graph', 'figure'),
         Output('map-graph-header', 'children'),
         Output('expocode', 'data'),
+        Output('expocode', 'value', allow_duplicate=True)
     ],
     [
         Input('map-variable', 'value'),
@@ -565,10 +745,12 @@ def set_up(click_in):
     ],
     [
         State('expocode', 'value')
-    ]
+    ], prevent_initial_call=True
 )
 def update_map(map_in_variable, in_regions, in_woce_water, in_start_date, in_end_date, in_investigator, in_org, in_qc_flag, in_platform_type, map_info, map_in_expocode, in_version_change_flag):
     decimated_url = redis_instance.hget("cache","decimated_url").decode('utf-8')
+    meta = json.loads(redis_instance.hget("cache","metadata"))
+    v_d_types = meta["types"]
     vars_to_get = ['latitude','longitude','time','expocode']
     if map_in_variable not in vars_to_get:
         vars_to_get.append(map_in_variable)
@@ -610,8 +792,11 @@ def update_map(map_in_variable, in_regions, in_woce_water, in_start_date, in_end
     if map_in_expocode is not None and len(map_in_expocode) > 0:
         expo_store = redis_instance.hget("cache", "expocodes")
 
+    out_expocode = map_in_expocode
     if len(expo_options) == 0:
         expocodes = df['expocode'].unique()
+        if out_expocode not in expocodes:
+            out_expocode = ''
         for code in sorted(expocodes):
             expo_options.append({'value': code, 'label': code})
 
@@ -681,7 +866,7 @@ def update_map(map_in_variable, in_regions, in_woce_water, in_start_date, in_end
     figure.update_geos(showland=True, coastlinecolor='black', coastlinewidth=1, landcolor='tan', resolution=50)
 
     redis_instance.hset("cache", "expocodes", json.dumps(expo_options))
-    return [figure, title, expo_options, placeholder]
+    return [figure, title, expo_options, out_expocode]
 
 
 def get_map_ranges(df):
@@ -824,6 +1009,7 @@ def set_platform_code_from_map(in_click, state_in_expovalue):
 @app.callback(
     [
         Output('one-graph-card', 'style'),
+        Output('minimap-card', 'style')
     ],
     [
         Input('plot-data-change', 'data'),
@@ -832,9 +1018,9 @@ def set_platform_code_from_map(in_click, state_in_expovalue):
 )    
 def set_visibility_plot(plot_data, in_expocode):
     if (in_expocode is None or len(in_expocode) < 1) or (plot_data is None or plot_data == 'no'):
-        return [hidden,]
+        return [hidden, hidden]
     else:
-        return [visible,]
+        return [visible, visible]
 
 
 
@@ -888,7 +1074,9 @@ def update_data_cache(trace_in_expocode, trace_in_variable):
 @app.callback(
     [
         Output('one-graph', 'figure'),
-        Output('one-graph-header', 'children')
+        Output('one-graph-header', 'children'),
+        Output('minimap', 'figure'),
+        Output('minimap-header', 'children'),
     ],
     [
         Input('plot-data-change', 'data'),
@@ -976,19 +1164,21 @@ def update_plots(plot_data_store, in_plot_type, in_prop_prop_x, in_prop_prop_y, 
             num_rows = num_rows + 1
         legend = 1
         for pair in thumbnail_pairs:
+            x = pair[0]
+            y = pair[1]
             if legend == 1 :
                 leg = 'legend'
             else:
                 leg = 'legend' + str(legend)
             subplot_title = pair[1] + ' vs ' + pair[0] + ' colored by ' + pair[2]
-            x = pair[0]
-            y = pair[1]
+
             color_by = pair[2]
             subplot_titles.append(subplot_title)
             if color_by == 'expocode':
                 cmap = px.colors.qualitative.Light24
             else:
                 cmap = px.colors.qualitative.Dark24
+
             subplot = px.scatter(to_plot,
                         x=x,
                         y=y,
@@ -1031,8 +1221,20 @@ def update_plots(plot_data_store, in_plot_type, in_prop_prop_x, in_prop_prop_y, 
                 i = i + 1
 
         figure.update_layout(height=num_rows*450, margin=dict( l=80, r=80, b=80, t=80, ))
-    # DEBUG print('returning figure and title')
-    return[figure, card_title]
+    minimap = px.scatter_geo(to_plot,
+                            lon='longitude',
+                            lat='latitude',
+                            color=in_map_variable,
+                            hover_name='expocode',
+                            # labels = {'color': color_by},
+                            hover_data=['time','latitude','longitude','expocode', 'latitude', 'longitude', in_map_variable],
+                            custom_data=['time'],
+                            color_continuous_scale='Viridis',
+    )
+    minimap_title = 'Full resolution map trace of ' + in_map_variable + ' for ' + ', '.join(plot_in_expocode)
+    minimap.update_layout(margin={'t':25, 'b':25, 'l':0, 'r':0})
+    minimap.update_geos(showland=True, coastlinecolor='black', coastlinewidth=1, landcolor='tan', resolution=50, fitbounds='locations')
+    return[figure, card_title, minimap, minimap_title]
 
 
 @app.callback(
@@ -1144,8 +1346,8 @@ def set_prop_prop_display(in_plot_type):
     ],
     [
         Input('reset', 'n_clicks'),
-        State('start-date-picker', 'minDate'),
-        State('end-date-picker', 'maxDate')
+        State('start-date-picker', 'min'),
+        State('end-date-picker', 'max')
     ], prevent_initial_call=True
 )
 def reset_map(click, min_date, max_date):
@@ -1168,4 +1370,4 @@ def log(method, message, object):
         pp.pprint(object)
 
 if __name__ == '__main__':
-    app.run_server(debug=True)
+    app.run_server(debug=True, dev_tools_props_check=False)
