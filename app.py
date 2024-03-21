@@ -806,7 +806,7 @@ def update_map(map_in_variable, in_regions, in_woce_water, in_start_date, in_end
         figure.update_layout(margin={'t':25, 'b':25, 'l':0, 'r':0})
         figure.update_geos(showland=True, coastlinecolor='black', coastlinewidth=1, landcolor='tan', resolution=50)
         figure.update_layout(title='Query returned no results.')
-        return [figure, 'No matching data found.', []]  
+        return [figure, 'No matching data found.', [], '']  
 
     if map_in_expocode is not None and len(map_in_expocode) > 0:
         expo_store = redis_instance.hget("cache", "expocodes")
