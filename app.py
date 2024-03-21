@@ -1,4 +1,4 @@
-from dash import Dash, dcc, html, Input, Output, State, exceptions, callback_context, ALL, no_update
+from dash import Dash, dcc, html, Input, Output, State, exceptions, callback_context, ALL, no_update, DiskcacheManager, CeleryManager
 import dash_design_kit as ddk
 import plotly.graph_objects as go
 import plotly.express as px
@@ -30,6 +30,13 @@ from sdig.erddap.info import Info
 
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
+
+import diskcache
+
+import celery
+from celery import Celery
+from celery.schedules import crontab
+from celery.utils.log import get_task_logger
 
 # Create a SQLAlchemy connection string from the environment variable `DATABASE_URL`
 # automatically created in your dash app when it is linked to a postgres container
@@ -195,15 +202,27 @@ redis_instance.hset("cache", 'decimated_url', datasets[last_did]['urls'][1])
 initial_full_url = datasets[last_did]['urls'][0]
 initial_decimated_url = datasets[last_did]['urls'][1]
 
+
+celery_app = Celery(broker=os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"), backend=os.environ.get("REDIS_URL", "redis://127.0.0.1:6379"))
+if os.environ.get("DASH_ENTERPRISE_ENV") == "WORKSPACE":
+    # For testing...
+    # import diskcache
+    cache = diskcache.Cache("./cache")
+    background_callback_manager = DiskcacheManager(cache)
+else:
+    # For production...
+    background_callback_manager = CeleryManager(celery_app)
+
+
 # Define Dash application structure
-app = Dash(__name__)
+app = Dash(__name__, background_callback_manager=background_callback_manager,)
 server = app.server  # expose server variable for Procfile
 
 app.layout = dmc.Container(fluid=True, children=[
     dmc.Header(height=90, children=[
         dmc.Group(children=[
             dmc.Image(src='https://www.socat.info/wp-content/uploads/2017/06/cropped-socat_cat.png', height='70px', width='140px'),
-            dmc.Text('Surface Ocean CO\u2082 Viewer', size="xl", weight=700),
+            html.H1('Surface Ocean CO\u2082 Viewer'), #, size="xl", weight=700),
             
         ],style={'margin-top': '8px'} )
     ], withBorder=True),
@@ -745,7 +764,7 @@ def set_up(click_in):
     ],
     [
         State('expocode', 'value')
-    ], prevent_initial_call=True
+    ], prevent_initial_call=True, background=True
 )
 def update_map(map_in_variable, in_regions, in_woce_water, in_start_date, in_end_date, in_investigator, in_org, in_qc_flag, in_platform_type, map_info, map_in_expocode, in_version_change_flag):
     decimated_url = redis_instance.hget("cache","decimated_url").decode('utf-8')
@@ -1089,7 +1108,7 @@ def update_data_cache(trace_in_expocode, trace_in_variable):
         State('expocode', 'value'),
         State('map-variable', 'value'),
  
-    ], prevent_initial_call=True
+    ], prevent_initial_call=True, background=True
 )
 def update_plots(plot_data_store, in_plot_type, in_prop_prop_x, in_prop_prop_y, in_prop_prop_colorby, plot_in_expocode, in_map_variable):
 
