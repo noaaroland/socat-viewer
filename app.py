@@ -37,6 +37,8 @@ import celery
 from celery import Celery
 from celery.schedules import crontab
 from celery.utils.log import get_task_logger
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # Create a SQLAlchemy connection string from the environment variable `DATABASE_URL`
 # automatically created in your dash app when it is linked to a postgres container
@@ -922,7 +924,9 @@ def get_map_ranges(df):
 )
 def show_selected_points(in_points):
     if in_points is not None:
-        all_data = pd.read_json(redis_instance.hget("cache","plot-data"))
+        all_data_string = redis_instance.hget("cache","plot-data").decode('utf-8')
+        all_data_json = json.loads(all_data_string)
+        all_data = pd.read_json(all_data_json)
         column_names = sorted(all_data.columns, key=str.casefold)
         column_names.remove('WOCE_CO2_water')
         column_names.insert(0, 'WOCE_CO2_water')
@@ -945,7 +949,7 @@ def show_selected_points(in_points):
             customs = point['customdata']
             times.append(customs[0])
         to_show = all_data.loc[all_data['time'].isin(times)]
-        redis_instance.hset("cache", 'edit-table-data', to_show.to_json())
+        redis_instance.hset("cache", 'edit-table-data', json.dumps(to_show.to_json()))
         return [to_show.to_dict("records"), columnDefs]
     else:
         raise exceptions.PreventUpdate
@@ -993,9 +997,12 @@ def selectData(selectData):
 )
 def set_platform_code_from_map(in_click, state_in_expovalue):
     out_expocode = None
-    # DEBUG print('=-=-=-=-=- starting set_platform_code_from_map =-=-=-=-=-=')
-    # DEBUG     print('printing click')
-    # DEBUG     print(str(in_click))
+    # DEBUG
+    print('=-=-=-=-=- starting set_platform_code_from_map =-=-=-=-=-=')
+    # DEBUG     
+    print('printing click')
+    # DEBUG     
+    print(str(in_click))
     if in_click is not None:
         # DEBUG         print('getting first point')
         fst_point = in_click['points'][0]
@@ -1073,7 +1080,7 @@ def update_data_cache(trace_in_expocode, trace_in_variable):
         vars_to_get = list(set(vars_to_get))
         url = full_url + '.csv?' + ','.join(vars_to_get) +'&'+expo_con['con']
         # if there is an expo set, use the list previously set
-        expo_store = redis_instance.hget("cache", "expocodes")
+        expo_store = redis_instance.hget("cache", "expocodes").decode('utf-8')
         expo_options = json.loads(expo_store)
     else:
         raise exceptions.PreventUpdate
@@ -1082,7 +1089,7 @@ def update_data_cache(trace_in_expocode, trace_in_variable):
     netcdf_url = url.replace('csv', 'ncCF')
     table_url = url.replace('csv', 'htmlTable')
     df = df.loc[df[trace_in_variable].notna()]
-    redis_instance.hset("cache", 'plot-data', df.to_json())
+    redis_instance.hset("cache", 'plot-data', json.dumps(df.to_json()))
     pairs_and_plot_options = []
     for var in sorted(vars_to_get):   
         if var != 'lat_meters' and var != 'lon_meters':
@@ -1125,8 +1132,9 @@ def update_plots(plot_data_store, in_plot_type, in_prop_prop_x, in_prop_prop_y, 
     if plot_data_store == 'no':
         # DEBUG print('no new data')
         raise exceptions.PreventUpdate
-    
-    to_plot = pd.read_json(redis_instance.hget("cache","plot-data"))
+    data_string = redis_instance.hget("cache","plot-data").decode('utf-8')
+    data_json = json.loads(data_string)
+    to_plot = pd.read_json(data_json)
 
     if to_plot.shape[0] < 1:
         raise exceptions.PreventUpdate
