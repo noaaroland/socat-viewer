@@ -233,6 +233,7 @@ app.layout = dmc.Container(fluid=True, children=[
     dcc.Store(id='map-info'),
     dcc.Store(id='version-change'),
     dcc.Store(id='grid-change'),
+    html.Div(id='div', children="joe div"),
     dmc.Tabs(id='tabs', children=[
         dmc.TabsList([
             dmc.Tab("Cruise Data", value="cruise", ),
@@ -636,6 +637,16 @@ def change_grid(in_grid_version, tab_value, in_figure):
     return ['yes', n_start_date, n_end_date, n_start_date, g_var_options, "fco2_count_nobs"]
 
 
+@app.callback(
+    [
+        Output('div', 'children')
+    ],
+    [
+        Input('grid-map', 'relayoutData')
+    ]
+)
+def joe(layoutdata):
+    return [str(layoutdata)]
 
 
 @app.callback(
